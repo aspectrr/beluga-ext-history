@@ -17,7 +17,7 @@ Searchable history extension for Beluga. Builds session digests (messages only, 
 ## Install
 
 ```bash
-beluga extend install github.com/collinpfeifer/beluga-ext-history
+beluga extend install github.com/aspectrr/beluga-ext-history
 ```
 
 ## Config

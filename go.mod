@@ -1,11 +1,11 @@
-module github.com/collinpfeifer/beluga-ext-history
+module github.com/aspectrr/beluga-ext-history
 
 go 1.25.0
 
-replace github.com/collinpfeifer/beluga => ../beluga
+replace github.com/aspectrr/beluga => ../beluga
 
 require (
-	github.com/collinpfeifer/beluga v0.0.0-00010101000000-000000000000
+	github.com/aspectrr/beluga v0.0.0-00010101000000-000000000000
 	github.com/jackc/pgx/v5 v5.9.2
 )
 
