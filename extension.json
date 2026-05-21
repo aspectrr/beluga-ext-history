@@ -1,0 +1,27 @@
+{
+  "name": "searchable_history",
+  "entrypoint": "index.ts",
+  "version": "0.1.0",
+  "description": "Builds session digests for completed sessions and exposes a history_search tool for FTS/vector search.",
+  "config": [
+    {
+      "name": "embedding_model",
+      "type": "string",
+      "description": "Embedding model for vector search (optional)",
+      "required": false
+    },
+    {
+      "name": "embedding_dimensions",
+      "type": "integer",
+      "description": "Vector dimensions for embedding model",
+      "required": false
+    },
+    {
+      "name": "digest_interval",
+      "type": "string",
+      "description": "Digest check interval (e.g. '30s')",
+      "required": false,
+      "default": "30s"
+    }
+  ]
+}

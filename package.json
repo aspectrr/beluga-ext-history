@@ -1,0 +1,14 @@
+{
+  "name": "@beluga/ext-history",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "index.ts",
+  "dependencies": {
+    "@beluga/sdk": "file:../beluga/packages/sdk",
+    "drizzle-orm": "^0.44.2"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.15",
+    "typescript": "^5.8.3"
+  }
+}
