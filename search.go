@@ -12,10 +12,14 @@ import (
 	"log/slog"
 )
 
-// HistorySearchTool searches past session digests using full-text search.
+// HistorySearchTool searches past session digests.
+// Uses full-text search by default. When an embedder is available,
+// falls back to vector similarity search.
 type HistorySearchTool struct {
-	db     *pgxpool.Pool
-	logger *slog.Logger
+	db       *pgxpool.Pool
+	embedder Embedder
+	cfg      Config
+	logger   *slog.Logger
 }
 
 func (t *HistorySearchTool) Definition() tools.ToolDef {
@@ -73,7 +77,15 @@ func (t *HistorySearchTool) Execute(ctx context.Context, args json.RawMessage, t
 		input.Limit = 5
 	}
 
-	// Full-text search using PostgreSQL tsvector/tsquery.
+	// Use vector search if an embedder is available, otherwise fall back to FTS.
+	if t.embedder != nil {
+		return t.vectorSearch(ctx, input.Query, input.Limit)
+	}
+	return t.fullTextSearch(ctx, input.Query, input.Limit)
+}
+
+// fullTextSearch searches using PostgreSQL tsvector/tsquery.
+func (t *HistorySearchTool) fullTextSearch(ctx context.Context, query string, limit int) (json.RawMessage, error) {
 	rows, err := t.db.Query(ctx, `
 		SELECT sd.session_id, sd.source, sd.digest, sd.created_at,
 		       ts_rank(sd.digest_tsv, plainto_tsquery('english', $1)) as rank
@@ -81,12 +93,50 @@ func (t *HistorySearchTool) Execute(ctx context.Context, args json.RawMessage, t
 		WHERE sd.digest_tsv @@ plainto_tsquery('english', $1)
 		ORDER BY rank DESC
 		LIMIT $2
-	`, input.Query, input.Limit)
+	`, query, limit)
 	if err != nil {
 		return nil, fmt.Errorf("searching history: %w", err)
 	}
 	defer rows.Close()
 
+	return scanResults(rows)
+}
+
+// vectorSearch searches using pgvector cosine similarity.
+func (t *HistorySearchTool) vectorSearch(ctx context.Context, query string, limit int) (json.RawMessage, error) {
+	embedding, err := t.embedder.Embed(ctx, query)
+	if err != nil {
+		// Fall back to FTS if embedding fails.
+		t.logger.Warn("embedding failed, falling back to full-text search", "error", err)
+		return t.fullTextSearch(ctx, query, limit)
+	}
+
+	vec := formatVector(embedding)
+	rows, err := t.db.Query(ctx, `
+		SELECT sd.session_id, sd.source, sd.digest, sd.created_at,
+		       1 - (sd.embedding <=> $1::vector) as rank
+		FROM session_digests sd
+		WHERE sd.embedding IS NOT NULL
+		ORDER BY sd.embedding <=> $1::vector
+		LIMIT $2
+	`, vec, limit)
+	if err != nil {
+		// Fall back to FTS if vector search fails (e.g. no pgvector).
+		t.logger.Warn("vector search failed, falling back to full-text search", "error", err)
+		return t.fullTextSearch(ctx, query, limit)
+	}
+	defer rows.Close()
+
+	return scanResults(rows)
+}
+
+// scanResults reads query rows into SearchResult slice.
+func scanResults(rows interface {
+	Close()
+	Next() bool
+	Scan(dest ...any) error
+	Err() error
+}) (json.RawMessage, error) {
 	var results []SearchResult
 	for rows.Next() {
 		var r SearchResult

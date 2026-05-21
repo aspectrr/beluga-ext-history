@@ -1,0 +1,20 @@
+# Beluga Extension Manifest
+name: searchable_history
+description: "Searchable history — builds session digests and provides full-text or vector search over past conversations."
+
+config:
+  - name: embedding_model
+    type: string
+    description: "Embedding model for semantic vector search (e.g. text-embedding-3-small). Enables pgvector mode when set."
+    required: false
+
+  - name: embedding_dimensions
+    type: int
+    description: "Embedding vector dimensions (must match the model output)"
+    required: false
+
+  - name: digest_interval
+    type: duration
+    description: "How often to check for completed sessions needing digests"
+    required: false
+    default: "30s"

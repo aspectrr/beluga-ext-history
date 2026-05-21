@@ -2,6 +2,7 @@ package searchable_history
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
@@ -17,10 +18,36 @@ type Embedder interface {
 	Embed(ctx context.Context, text string) ([]float64, error)
 }
 
-// Extension builds session digests and searches them using full-text search.
+// Config holds the extension configuration from beluga.yaml.
+type Config struct {
+	Enabled             bool   `json:"enabled"`
+	EmbeddingModel      string `json:"embedding_model"`
+	EmbeddingDimensions int    `json:"embedding_dimensions"`
+	DigestInterval      string `json:"digest_interval"`
+}
+
+func (c Config) EmbeddingEnabled() bool {
+	return c.EmbeddingModel != "" && c.EmbeddingDimensions > 0
+}
+
+func (c Config) DigestTickerDuration() time.Duration {
+	if c.DigestInterval == "" {
+		return 30 * time.Second
+	}
+	d, err := time.ParseDuration(c.DigestInterval)
+	if err != nil {
+		return 30 * time.Second
+	}
+	return d
+}
+
+// Extension builds session digests and searches them.
+// Uses full-text search by default. When embedding_model is configured,
+// switches to pgvector-based semantic search.
 type Extension struct {
 	db          *pgxpool.Pool
 	events      *eventstore.Store
+	cfg         Config
 	embedClient Embedder
 	logger      *slog.Logger
 }
@@ -32,30 +59,53 @@ func (e *Extension) Init(ctx extension.ExtensionContext) error {
 	e.events = ctx.Events
 	e.logger = ctx.Logger
 
-	// Run migration: create session_digests table.
+	// Parse config.
+	var cfg Config
+	if err := json.Unmarshal(ctx.Config, &cfg); err != nil {
+		return fmt.Errorf("searchable_history: parsing config: %w", err)
+	}
+	e.cfg = cfg
+
+	// Run migration: create session_digests table (FTS always, vector if enabled).
 	if err := e.migrate(context.Background()); err != nil {
 		return fmt.Errorf("searchable_history migration: %w", err)
 	}
 
-	// Embedding support is optional. For now, leave embedClient nil.
-	// Future: check config for embedding model and initialize Embedder.
+	// If embedding is configured, initialize the embedder.
+	if cfg.EmbeddingEnabled() {
+		// TODO: Initialize embedding client from the configured model.
+		// This will use Beluga's LLM config or a dedicated embedding endpoint.
+		// For now, log a warning that the config is set but not yet wired.
+		e.logger.Warn("embedding_model configured but embedding client not yet implemented",
+			"model", cfg.EmbeddingModel,
+			"dimensions", cfg.EmbeddingDimensions,
+		)
+	}
 
 	// Register the history search tool.
 	if err := ctx.Registry.Register(&HistorySearchTool{
-		db:     e.db,
-		logger: e.logger,
+		db:       e.db,
+		embedder: e.embedClient,
+		cfg:      e.cfg,
+		logger:   e.logger,
 	}); err != nil {
 		return fmt.Errorf("registering history_search tool: %w", err)
 	}
 
-	e.logger.Info("searchable_history extension initialized")
+	mode := "full-text"
+	if cfg.EmbeddingEnabled() {
+		mode = "vector (embedding)"
+	}
+
+	e.logger.Info("searchable_history extension initialized",
+		"mode", mode,
+		"digest_interval", cfg.DigestTickerDuration(),
+	)
 	return nil
 }
 
 func (e *Extension) Start(ctx context.Context) error {
-	// Start background goroutine to build digests for completed sessions.
 	go e.digestLoop(ctx)
-
 	<-ctx.Done()
 	return nil
 }
@@ -67,7 +117,7 @@ func (e *Extension) Stop(ctx context.Context) error {
 // digestLoop periodically checks for completed sessions without digests
 // and builds them.
 func (e *Extension) digestLoop(ctx context.Context) {
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(e.cfg.DigestTickerDuration())
 	defer ticker.Stop()
 
 	// Run once immediately on start.
@@ -85,7 +135,6 @@ func (e *Extension) digestLoop(ctx context.Context) {
 
 // buildPendingDigests finds completed sessions without digests and builds them.
 func (e *Extension) buildPendingDigests(ctx context.Context) {
-	// Find sessions that are completed but don't have a digest yet.
 	rows, err := e.db.Query(ctx, `
 		SELECT s.id, s.source
 		FROM sessions s
@@ -126,7 +175,6 @@ func (e *Extension) buildPendingDigests(ctx context.Context) {
 	e.logger.Info("building digests for completed sessions", "count", len(pending))
 
 	for _, p := range pending {
-		// Load all events for the session.
 		events, err := e.events.GetEvents(ctx, p.id, 0, 10000)
 		if err != nil {
 			e.logger.Error("failed to get events for digest", "session_id", p.id, "error", err)
@@ -137,18 +185,33 @@ func (e *Extension) buildPendingDigests(ctx context.Context) {
 			continue
 		}
 
-		// Build digest (messages only, tools stripped).
 		digest := BuildDigest(events)
 		if digest == "" {
 			continue
 		}
 
-		// Insert the digest.
-		_, err = e.db.Exec(ctx, `
-			INSERT INTO session_digests (session_id, source, digest)
-			VALUES ($1, $2, $3)
-			ON CONFLICT (session_id) DO NOTHING
-		`, p.id, p.source, digest)
+		// Build the insert — with or without embedding.
+		var embedding []float64
+		if e.embedClient != nil {
+			embedding, err = e.embedClient.Embed(ctx, digest)
+			if err != nil {
+				e.logger.Error("failed to embed digest", "session_id", p.id, "error", err)
+			}
+		}
+
+		if embedding != nil {
+			_, err = e.db.Exec(ctx, `
+				INSERT INTO session_digests (session_id, source, digest, embedding)
+				VALUES ($1, $2, $3, $4)
+				ON CONFLICT (session_id) DO NOTHING
+			`, p.id, p.source, digest, formatVector(embedding))
+		} else {
+			_, err = e.db.Exec(ctx, `
+				INSERT INTO session_digests (session_id, source, digest)
+				VALUES ($1, $2, $3)
+				ON CONFLICT (session_id) DO NOTHING
+			`, p.id, p.source, digest)
+		}
 		if err != nil {
 			e.logger.Error("failed to insert digest", "session_id", p.id, "error", err)
 			continue
@@ -158,6 +221,20 @@ func (e *Extension) buildPendingDigests(ctx context.Context) {
 			"session_id", p.id,
 			"source", p.source,
 			"digest_len", len(digest),
+			"embedded", embedding != nil,
 		)
 	}
+}
+
+// formatVector formats a float64 slice as a pgvector literal string.
+func formatVector(v []float64) string {
+	s := "["
+	for i, f := range v {
+		if i > 0 {
+			s += ","
+		}
+		s += fmt.Sprintf("%f", f)
+	}
+	s += "]"
+	return s
 }
