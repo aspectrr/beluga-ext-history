@@ -12,10 +12,10 @@ import type {
 	ToolDef,
 	ToolContext,
 	EventType as EventTypeType,
-} from "@beluga/sdk";
+} from "@aspectrr/beluga-sdk";
 
 // EventType is a const object in the SDK; destructure values we need
-import { EventType } from "@beluga/sdk";
+import { EventType } from "@aspectrr/beluga-sdk";
 
 // ── Config ─────────────────────────────────────────────────────
 
@@ -80,10 +80,10 @@ function buildDigest(
 // ── HistorySearchTool ──────────────────────────────────────────
 
 class HistorySearchTool implements Tool {
-	private db: import("@beluga/sdk").ExtDB;
+	private db: import("@aspectrr/beluga-sdk").ExtDB;
 	private embedder: Embedder | null;
 
-	constructor(db: import("@beluga/sdk").ExtDB, embedder: Embedder | null) {
+	constructor(db: import("@aspectrr/beluga-sdk").ExtDB, embedder: Embedder | null) {
 		this.db = db;
 		this.embedder = embedder;
 	}
@@ -189,7 +189,7 @@ class HistorySearchTool implements Tool {
 
 // ── Migration ──────────────────────────────────────────────────
 
-async function migrate(db: import("@beluga/sdk").ExtDB, cfg: HistoryConfig): Promise<void> {
+async function migrate(db: import("@aspectrr/beluga-sdk").ExtDB, cfg: HistoryConfig): Promise<void> {
 	await db.executeSql(sql`
 		CREATE TABLE IF NOT EXISTS session_digests (
 			session_id  UUID PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
@@ -226,8 +226,8 @@ async function migrate(db: import("@beluga/sdk").ExtDB, cfg: HistoryConfig): Pro
 class HistoryExtension implements Extension {
 	name = "searchable_history";
 	private cfg!: HistoryConfig;
-	private db!: import("@beluga/sdk").ExtDB;
-	private events!: import("@beluga/sdk").EventStore;
+	private db!: import("@aspectrr/beluga-sdk").ExtDB;
+	private events!: import("@aspectrr/beluga-sdk").EventStore;
 	private intervalId?: ReturnType<typeof setInterval>;
 
 	async init(ctx: ExtensionContext): Promise<void> {
